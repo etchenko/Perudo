@@ -55,6 +55,7 @@ class LiarDiceEngine:
 			faces=self.faces,
 			wild_ones=self.wild_ones,
 			round_bids=[],
+			game_history=[],
 		)
 
 	def _begin_round(self) -> None:
@@ -104,9 +105,9 @@ class LiarDiceEngine:
 	def _record_bid(self, idx: int, bid: Bid) -> None:
 		assert self.state is not None
 		self.state.current_bid = bid
-		self.state.round_bids.append(
-			RoundBid(player_idx=idx, player_name=self.state.players[idx].name, bid=bid)
-		)
+		rb = RoundBid(player_idx=idx, player_name=self.state.players[idx].name, bid=bid, round_number=self.state.round_number)
+		self.state.round_bids.append(rb)
+		self.state.game_history.append(rb)
 		self._emit("bid", player=self.state.players[idx].name, quantity=bid.quantity, face=bid.face)
 
 	def legal_actions(self) -> List[Action]:
@@ -119,6 +120,25 @@ class LiarDiceEngine:
 			cur = self.state.current_bid
 			if cur is None:
 				return True
+			
+			# Special rules for wild ones games
+			if self.wild_ones:
+				# Bidding on ones: can halve the current quantity (rounded up)
+				if b.face == 1:
+					if cur.face == 1:
+						# Both on ones: standard higher rule
+						return b.quantity > cur.quantity
+					else:
+						# Moving to ones: need at least ceil(current_quantity / 2)
+						import math
+						min_ones = math.ceil(cur.quantity / 2.0)
+						return b.quantity >= min_ones
+				# Moving away from ones: must at least double + 1
+				elif cur.face == 1:
+					min_quantity = cur.quantity * 2 + 1
+					return b.quantity >= min_quantity
+			
+			# Standard rule: quantity must be higher, or same quantity with higher face
 			return (b.quantity > cur.quantity) or (b.quantity == cur.quantity and b.face > cur.face)
 
 		for q in range(1, total + 1):
@@ -238,13 +258,23 @@ class LiarDiceEngine:
 				agent = self.state.players[idx].agent
 				legal = self.legal_actions()
 				state_view = self.state.visible_summary_for(idx)
-				action = agent.decide(state_view, legal)
+				action = agent.decide(state_view)
 
 				if action.kind == 'bid':
 					# validate
 					if action.bid is None or action not in legal:
-						raise ValueError(f"Illegal bid by {agent.name}: {action}")
-					self._record_bid(idx, action.bid)
+						# Force challenge if a bid exists, else pick minimal legal bid
+						if self.state.current_bid is not None:
+							action = Action(kind='challenge')
+						else:
+							# minimal legal bid
+							min_bid = min((a.bid for a in legal if a.kind == 'bid' and a.bid is not None), key=lambda b: (b.quantity, b.face))
+							action = Action(kind='bid', bid=min_bid)
+					if action.kind == 'bid':
+						self._record_bid(idx, action.bid)
+					else:
+						# handled below as challenge
+						pass
 					if verbose:
 						print(f"{agent.name} bids {action.bid}")
 					self.state.current_player_idx = self._next_player_idx(idx)
@@ -259,7 +289,15 @@ class LiarDiceEngine:
 					break
 				elif action.kind == 'exact':
 					if not self.exact_call_enabled or self.state.current_bid is None:
-						raise ValueError("Exact call not allowed or no bid")
+						# Force challenge instead when exact not allowed
+						action = Action(kind='challenge')
+						# fall through to challenge branch
+						if verbose:
+							print(f"{agent.name} calls Dudo (challenge)")
+						result = self._resolve_challenge(challenger_idx=idx)
+						self._print_resolution(result, actual=None, verbose=verbose)
+						self._post_resolution_cleanup(result)
+						break
 					if verbose:
 						print(f"{agent.name} calls Exact")
 					result = self._resolve_exact(idx)

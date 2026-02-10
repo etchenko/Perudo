@@ -38,6 +38,7 @@ class RoundBid:
     player_idx: int
     player_name: str
     bid: Bid
+    round_number: int
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,7 @@ class RoundBidPublic:
     player_name: str
     quantity: int
     face: int
+    round_number: int
 
 
 @dataclass(frozen=True)
@@ -63,6 +65,8 @@ class PublicState:
     wild_ones: bool
     my_dice: List[int]
     round_bids: List[RoundBidPublic]
+    game_history: List[RoundBidPublic]
+    permutation_number: int
 
 
 @dataclass
@@ -74,6 +78,7 @@ class GameState:
     faces: int
     wild_ones: bool
     round_bids: List[RoundBid]
+    game_history: List[RoundBid]
 
     def total_dice_in_play(self) -> int:
         return sum(p.dice_remaining for p in self.players)
@@ -85,8 +90,12 @@ class GameState:
             for i, p in enumerate(self.players)
         ]
         round_bids_public = [
-            RoundBidPublic(player_name=rb.player_name, quantity=rb.bid.quantity, face=rb.bid.face)
+            RoundBidPublic(player_name=rb.player_name, quantity=rb.bid.quantity, face=rb.bid.face, round_number=rb.round_number)
             for rb in self.round_bids
+        ]
+        game_history_public = [
+            RoundBidPublic(player_name=rb.player_name, quantity=rb.bid.quantity, face=rb.bid.face, round_number=rb.round_number)
+            for rb in self.game_history
         ]
         return PublicState(
             players=players_public,
@@ -96,6 +105,8 @@ class GameState:
             wild_ones=self.wild_ones,
             my_dice=list(self.players[player_idx].dice),
             round_bids=round_bids_public,
+            game_history=game_history_public,
+            permutation_number=0,  # Will be set by engine in the future
         )
 
 

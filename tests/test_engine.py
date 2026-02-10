@@ -11,28 +11,15 @@ class ScriptedAgent:
         self.name = name
         self._script = list(script)
 
-    def decide(self, state_view: Mapping[str, Any], legal_actions: Sequence[Action]) -> Action:
+    def decide(self, state_view, *args, **kwargs) -> Action:
         if not self._script:
             # default to challenge if possible, else minimal bid
-            challenge = next((a for a in legal_actions if a.kind == 'challenge'), None)
-            if challenge:
-                return challenge
-            bids = [a for a in legal_actions if a.kind == 'bid']
-            return min(bids, key=lambda a: (a.bid.quantity, a.bid.face))
+            return Action(kind='challenge') if state_view.current_bid else Action(kind='bid', bid=Bid(1, 1))
         desired = self._script.pop(0)
-        # If desired is illegal, pick a legal alternative of same kind
-        for a in legal_actions:
-            if a.kind == desired.kind and (a.bid == desired.bid):
-                return a
-        # Fallback: choose minimal legal bid or challenge
-        challenge = next((a for a in legal_actions if a.kind == 'challenge'), None)
-        if desired.kind == 'challenge' and challenge:
-            return challenge
-        bids = [a for a in legal_actions if a.kind == 'bid']
-        return min(bids, key=lambda a: (a.bid.quantity, a.bid.face))
+        return desired
 
 
-class TestEngine(LiarDiceEngine):
+class DeterministicEngine(LiarDiceEngine):
     """Expose a single-round play method for testing with fixed dice."""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -65,13 +52,24 @@ class TestEngine(LiarDiceEngine):
             agent = self.state.players[idx].agent
             legal = self.legal_actions()
             view = self.state.visible_summary_for(idx)
-            action = agent.decide(view, legal)
+            action = agent.decide(view)
             if action.kind == 'bid':
                 if action.bid is None or action not in legal:
-                    raise ValueError("Illegal bid")
-                self.state.current_bid = action.bid
-                self.state.round_bids.append(RoundBid(player_idx=idx, player_name=self.state.players[idx].name, bid=action.bid))
-                self.state.current_player_idx = (idx + 1) % len(self.state.players)
+                    if self.state.current_bid is not None:
+                        action = Action(kind='challenge')
+                    else:
+                        # choose minimal legal bid
+                        min_bid = min((a.bid for a in legal if a.kind == 'bid' and a.bid), key=lambda b: (b.quantity, b.face))
+                        action = Action(kind='bid', bid=min_bid)
+                if action.kind == 'bid':
+                    self.state.current_bid = action.bid
+                    rb = RoundBid(player_idx=idx, player_name=self.state.players[idx].name, bid=action.bid, round_number=self.state.round_number)
+                    self.state.round_bids.append(rb)
+                    self.state.game_history.append(rb)
+                    self.state.current_player_idx = (idx + 1) % len(self.state.players)
+                else:
+                    # fallthrough to challenge
+                    pass
             elif action.kind == 'challenge':
                 if self.state.current_bid is None:
                     raise ValueError("Challenge without bid")
@@ -125,7 +123,7 @@ class LiarDiceTests(unittest.TestCase):
             PlayerState(name='A', dice_remaining=3, dice=[1, 2, 3], agent=None),
             PlayerState(name='B', dice_remaining=3, dice=[1, 2, 2], agent=None),
         ]
-        state = GameState(players=players, current_player_idx=0, current_bid=None, round_number=1, faces=6, wild_ones=False, round_bids=[])
+        state = GameState(players=players, current_player_idx=0, current_bid=None, round_number=1, faces=6, wild_ones=False, round_bids=[], game_history=[])
         engine = LiarDiceEngine(wild_ones=False)
         engine.state = state
         self.assertEqual(engine._count_face(2), 3)  # only 2s count
@@ -135,7 +133,7 @@ class LiarDiceTests(unittest.TestCase):
             PlayerState(name='A', dice_remaining=3, dice=[1, 2, 3], agent=None),
             PlayerState(name='B', dice_remaining=3, dice=[1, 2, 2], agent=None),
         ]
-        state = GameState(players=players, current_player_idx=0, current_bid=None, round_number=1, faces=6, wild_ones=True, round_bids=[])
+        state = GameState(players=players, current_player_idx=0, current_bid=None, round_number=1, faces=6, wild_ones=True, round_bids=[], game_history=[])
         engine = LiarDiceEngine(wild_ones=True)
         engine.state = state
         self.assertEqual(engine._count_face(2), 5)  # 2s + ones count
@@ -145,7 +143,7 @@ class LiarDiceTests(unittest.TestCase):
         # Two players. A bids, B challenges.
         a = ScriptedAgent('A', [Action(kind='bid', bid=Bid(1, 2))])
         b = ScriptedAgent('B', [Action(kind='challenge')])
-        engine = TestEngine(wild_ones=False, starting_dice=3)
+        engine = DeterministicEngine(wild_ones=False, starting_dice=3)
         engine.add_players([a, b])
         engine.start_new_game()
         # Fix dice manually for predictability
@@ -165,7 +163,7 @@ class LiarDiceTests(unittest.TestCase):
         p0 = ScriptedAgent('P0', [Action(kind='bid', bid=Bid(1, 2)), Action(kind='challenge')])
         p1 = ScriptedAgent('P1', [Action(kind='bid', bid=Bid(1, 5))])
         p2 = ScriptedAgent('P2', [Action(kind='bid', bid=Bid(1, 6))])
-        engine = TestEngine(wild_ones=False, starting_dice=1)
+        engine = DeterministicEngine(wild_ones=False, starting_dice=1)
         engine.add_players([p0, p1, p2])
         engine.start_new_game()
         # Ensure last player has 1 die and will be bidder then eliminated
@@ -190,8 +188,9 @@ class LiarDiceTests(unittest.TestCase):
             def __init__(self, name):
                 self.name = name
                 self.checked = False
+                self.call_count = 0
 
-            def decide(self, state_view, legal_actions):
+            def decide(self, state_view):
                 # Ensure players entries do not expose dice lists
                 players = state_view.players
                 for entry in players:
@@ -202,17 +201,19 @@ class LiarDiceTests(unittest.TestCase):
                 assert all(isinstance(d, int) for d in my_dice)
                 # Ensure round_bids is present
                 assert isinstance(state_view.round_bids, list)
+                # Ensure game_history is present
+                assert isinstance(state_view.game_history, list)
                 self.checked = True
-                # Bid minimally
-                bids = [a for a in legal_actions if a.kind == 'bid']
-                if bids:
-                    return min(bids, key=lambda a: (a.bid.quantity, a.bid.face))
-                # Fallback if no bids (shouldn't happen at round start)
-                return next(iter(legal_actions))
+                self.call_count += 1
+                # First call bids, second call challenges to end round
+                if self.call_count == 1:
+                    return Action(kind='bid', bid=Bid(1, 2))
+                else:
+                    return Action(kind='challenge')
 
         a0 = InspectingAgent('A')
         a1 = InspectingAgent('B')
-        engine = TestEngine(wild_ones=True, starting_dice=2)
+        engine = DeterministicEngine(wild_ones=True, starting_dice=2)
         engine.add_players([a0, a1])
         engine.start_new_game()
         engine.set_round_dice([
@@ -220,10 +221,12 @@ class LiarDiceTests(unittest.TestCase):
             [2, 3],
         ])
         engine.play_one_round(verbose=False)
-        self.assertTrue(a0.checked or a1.checked)
+        # Both agents should have been called and checked
+        self.assertTrue(a0.checked)
+        self.assertTrue(a1.checked)
 
     def test_legal_actions_initial_all_bids(self):
-        engine = TestEngine(wild_ones=False, starting_dice=2, faces=6)
+        engine = DeterministicEngine(wild_ones=False, starting_dice=2, faces=6)
         # two players => 4 dice total
         a = ScriptedAgent('A', [])
         b = ScriptedAgent('B', [])
@@ -248,7 +251,7 @@ class LiarDiceTests(unittest.TestCase):
 
     def test_legal_actions_with_current_bid_and_exact_toggle(self):
         # Setup with 5 dice total
-        engine = TestEngine(wild_ones=False, starting_dice=3, faces=6, exact_call_enabled=True)
+        engine = DeterministicEngine(wild_ones=False, starting_dice=3, faces=6, exact_call_enabled=True)
         x = ScriptedAgent('X', [])
         y = ScriptedAgent('Y', [])
         engine.add_players([x, y])
@@ -285,7 +288,7 @@ class LiarDiceTests(unittest.TestCase):
         # Correct exact: set bid to match actual
         a = ScriptedAgent('A', [Action(kind='bid', bid=Bid(2, 2))])
         b = ScriptedAgent('B', [Action(kind='exact')])
-        engine = TestEngine(wild_ones=False, starting_dice=3, faces=6, exact_call_enabled=True)
+        engine = DeterministicEngine(wild_ones=False, starting_dice=3, faces=6, exact_call_enabled=True)
         engine.add_players([a, b])
         engine.start_new_game()
         engine.register_listener(collect)
@@ -303,7 +306,7 @@ class LiarDiceTests(unittest.TestCase):
         events.clear()
         a2 = ScriptedAgent('A2', [Action(kind='bid', bid=Bid(1, 6))])
         b2 = ScriptedAgent('B2', [Action(kind='exact')])
-        engine2 = TestEngine(wild_ones=False, starting_dice=1, faces=6, exact_call_enabled=True)
+        engine2 = DeterministicEngine(wild_ones=False, starting_dice=1, faces=6, exact_call_enabled=True)
         engine2.add_players([a2, b2])
         engine2.start_new_game()
         engine2.register_listener(collect)
@@ -318,7 +321,7 @@ class LiarDiceTests(unittest.TestCase):
         self.assertTrue(any(e[0] == 'player_eliminated' for e in events))
 
     def test_bid_ordering_strictly_increasing(self):
-        engine = TestEngine(wild_ones=False, starting_dice=2, faces=6)
+        engine = DeterministicEngine(wild_ones=False, starting_dice=2, faces=6)
         a = ScriptedAgent('A', [])
         b = ScriptedAgent('B', [])
         engine.add_players([a, b])
