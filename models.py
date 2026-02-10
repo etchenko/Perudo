@@ -64,7 +64,6 @@ class GameState:
                 }
                 for i, p in enumerate(self.players)
             ],
-            'current_player_idx': self.current_player_idx,
             'current_bid': None if self.current_bid is None else {
                 'quantity': self.current_bid.quantity,
                 'face': self.current_bid.face,
