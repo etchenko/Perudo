@@ -4,7 +4,7 @@ import math
 import random
 from typing import Callable, List, Optional, Sequence
 
-from models import Action, Agent, Bid, GameState, PlayerState, RoundBid, RoundResult
+from models import Action, Agent, Bid, GameState, PlayerState, RoundBid, RoundResult, RoundResolution
 
 
 import signal
@@ -72,7 +72,7 @@ class LiarDiceEngine:
 			faces=self.faces,
 			wild_ones=self.wild_ones,
 			round_bids=[],
-			game_history=[],
+			round_resolutions=[],
 		)
 
 	def _begin_round(self) -> None:
@@ -119,12 +119,16 @@ class LiarDiceEngine:
 				revealed_counts[d] += 1
 		return revealed_counts
 
+	def _capture_revealed_dice(self) -> dict[str, List[int]]:
+		"""Capture all players' dice at resolution time"""
+		assert self.state is not None
+		return {p.name: list(p.dice) for p in self.state.players}
+
 	def _record_bid(self, idx: int, bid: Bid) -> None:
 		assert self.state is not None
 		self.state.current_bid = bid
 		rb = RoundBid(player_idx=idx, player_name=self.state.players[idx].name, bid=bid, round_number=self.state.round_number)
 		self.state.round_bids.append(rb)
-		self.state.game_history.append(rb)
 		self._emit("bid", player=self.state.players[idx].name, quantity=bid.quantity, face=bid.face)
 
 	def is_action_legal(self, action: Action) -> bool:
@@ -181,6 +185,23 @@ class LiarDiceEngine:
 		else:
 			winner, loser = challenger_idx, bidder_idx
 
+		# Capture revealed dice before adjusting
+		revealed_dice = self._capture_revealed_dice()
+		
+		# Record the resolution
+		resolution = RoundResolution(
+			round_number=self.state.round_number,
+			bids=list(self.state.round_bids),  # Copy all bids from this round
+			final_bid=bid,
+			resolution_type='challenge',
+			resolver_name=self.state.players[challenger_idx].name,
+			winner_name=self.state.players[winner].name,
+			loser_name=self.state.players[loser].name,
+			actual_count=actual,
+			revealed_dice=revealed_dice,
+		)
+		self.state.round_resolutions.append(resolution)
+
 		# Adjust dice
 		self.state.players[loser].dice_remaining = max(0, self.state.players[loser].dice_remaining - 1)
 		revealed_counts = self._compute_revealed_counts()
@@ -196,22 +217,43 @@ class LiarDiceEngine:
 		assert self.state is not None and self.state.current_bid is not None
 		bid = self.state.current_bid
 		actual = self._count_face(bid.face)
+		
+		# Capture revealed dice before adjusting
+		revealed_dice = self._capture_revealed_dice()
+		
 		# Correct exact: caller gains a die (capped), winner=caller
 		if actual == bid.quantity:
-			self.state.players[idx].dice_remaining = min(
-				self.starting_dice, self.state.players[idx].dice_remaining + 1
+			winner, loser = idx, self._prev_player_idx(idx)
+			self.state.players[winner].dice_remaining = min(
+				self.state.players[winner].dice_remaining + 1, self.starting_dice
 			)
-			winner_idx, loser_idx = idx, self._prev_player_idx(idx)
+			self.state.players[loser].dice_remaining = max(0, self.state.players[loser].dice_remaining - 1)
 		else:
-			self.state.players[idx].dice_remaining = max(0, self.state.players[idx].dice_remaining - 1)
-			winner_idx, loser_idx = self._prev_player_idx(idx), idx
+			# Incorrect exact: caller loses, bidder wins
+			winner, loser = self._prev_player_idx(idx), idx
+			self.state.players[loser].dice_remaining = max(0, self.state.players[loser].dice_remaining - 1)
+		
+		# Record the resolution
+		resolution = RoundResolution(
+			round_number=self.state.round_number,
+			bids=list(self.state.round_bids),  # Copy all bids from this round
+			final_bid=bid,
+			resolution_type='exact',
+			resolver_name=self.state.players[idx].name,
+			winner_name=self.state.players[winner].name,
+			loser_name=self.state.players[loser].name,
+			actual_count=actual,
+			revealed_dice=revealed_dice,
+		)
+		self.state.round_resolutions.append(resolution)
+
 		revealed_counts = self._compute_revealed_counts()
 		return RoundResult(
-			winner_idx=winner_idx,
-			loser_idx=loser_idx,
+			winner_idx=winner,
+			loser_idx=loser,
 			revealed_counts=revealed_counts,
 			resolved_on='exact',
-			bid=self.state.current_bid,
+			bid=bid,
 		)
 
 	def _post_resolution_cleanup(self, result: RoundResult) -> None:
@@ -234,6 +276,9 @@ class LiarDiceEngine:
 			f"Bid was {self.state.current_bid}, actual count: {actual}. "
 			f"Winner: {self.state.players[result.winner_idx].name}, Loser: {self.state.players[result.loser_idx].name}"
 		)
+		# Show revealed dice
+		revealed_parts = [f"{p.name}: {p.dice}" for p in self.state.players]
+		print(f"Revealed dice: {', '.join(revealed_parts)}")
 		self._emit(
 			"challenge_resolved" if result.resolved_on == "challenge" else "exact_resolved",
 			winner=self.state.players[result.winner_idx].name,
@@ -352,8 +397,8 @@ class LiarDiceEngine:
 		# Notify all agents that the game has finished
 		for agent in self.agents:
 			try:
-				with time_limit(self.time_limit_seconds * 2): # 1 second for post-game processing
-					agent.game_finished(winner, self.state.game_history)
+				with time_limit(self.time_limit_seconds * 2): # 2 seconds for post-game processing
+					agent.game_finished(winner, self.state.round_resolutions)
 			except Exception:# Agent errors should not crash the engine
 				pass
 		

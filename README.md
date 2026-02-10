@@ -77,7 +77,7 @@ state_view.faces            # int - Number of faces on dice (usually 6)
 state_view.wild_ones        # bool - Whether ones are wild
 state_view.my_dice          # List[int] - YOUR dice (only you can see these)
 state_view.round_bids       # List[RoundBidPublic] - Bids made this round
-state_view.game_history     # List[RoundBidPublic] - All bids from entire game
+state_view.round_resolutions # List[RoundResolutionPublic] - How each round ended
 ```
 
 #### PlayerPublic Fields
@@ -91,12 +91,28 @@ player.mine               # bool - True if this is your player
 
 #### RoundBidPublic Fields
 
-Each bid in `round_bids` and `game_history` contains:
+Each bid in `round_bids` contains:
 ```python
 bid.player_name          # str - Who made the bid
 bid.quantity             # int - Number of dice bid
 bid.face                 # int - Face value bid (1-6)
 bid.round_number         # int - Which round this bid was made
+```
+
+#### RoundResolutionPublic Fields
+
+Each round resolution in `round_resolutions` contains:
+```python
+resolution.round_number         # int - Which round this was
+resolution.bids                 # List[RoundBidPublic] - All bids made this round
+resolution.final_bid_quantity   # int - Quantity of the final bid
+resolution.final_bid_face       # int - Face of the final bid
+resolution.resolution_type      # str - 'challenge' or 'exact'
+resolution.resolver_name        # str - Who called challenge/exact
+resolution.winner_name          # str - Who won the round
+resolution.loser_name           # str - Who lost the round
+resolution.actual_count         # int - Actual count of the bid face
+resolution.revealed_dice        # Dict[str, List[int]] - Everyone's dice that round
 ```
 
 #### Making Decisions
@@ -119,10 +135,10 @@ Action(kind='exact')
 Your agent can optionally implement the `game_finished` method to learn from completed games:
 
 ```python
-def game_finished(self, winner_name: str, game_history: List[RoundBid]) -> None:
+def game_finished(self, winner_name: str, round_resolutions: List[RoundResolution]) -> None:
     # Called after each game ends
     # winner_name: Name of the winning player
-    # game_history: Complete list of all bids from the entire game
+    # round_resolutions: Complete history of how each round ended
     
     # Use this to update weights, adjust strategies, etc.
     if winner_name == self.name:
@@ -130,16 +146,21 @@ def game_finished(self, winner_name: str, game_history: List[RoundBid]) -> None:
         pass
     else:
         # I lost. Analyze what went wrong
-        pass
+        for resolution in round_resolutions:
+            # Access revealed dice from each round
+            my_dice = resolution.revealed_dice[self.name]
+            # Analyze if I should have challenged/called exact
+            pass
 ```
 
 This method is called automatically by the engine after every game completes, allowing your agent to:
 - Update internal weights or parameters
-- Analyze betting patterns that led to wins/losses
+- Analyze betting patterns and revealed dice from each round
 - Implement reinforcement learning algorithms
 - Track performance metrics over multiple games
+- Review what everyone's dice were when challenges/exacts were called
 
-The `game_history` contains all bids made throughout the game with their round numbers, making it easy to analyze the entire game flow.
+The `round_resolutions` contains complete information about how each round ended, including the challenge/exact type, winner/loser, actual dice counts, and everyone's revealed dice for that round.
 
 **Note** This also has a default time limit of twice the regular time limit (2 seconds)
 
@@ -148,7 +169,7 @@ The `game_history` contains all bids made throughout the game with their round n
 - **You only see your own dice** (`state_view.my_dice`)
 - Other players' dice remain hidden until a challenge/exact call
 - **The engine validates your actions** - if you return an illegal bid, it will force a challenge or minimal legal bid
-- Use `state_view.game_history` to analyze betting patterns across rounds
+- Use `state_view.round_resolutions` to see revealed dice from completed rounds
 - With `wild_ones=True`, remember to account for ones when calculating probabilities
 
 ### Example Agents

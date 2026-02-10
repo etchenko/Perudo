@@ -50,11 +50,10 @@ class DeterministicEngine(LiarDiceEngine):
         while True:
             idx = self.state.current_player_idx
             agent = self.state.players[idx].agent
-            legal = self.legal_actions()
             view = self.state.visible_summary_for(idx)
             action = agent.decide(view)
             if action.kind == 'bid':
-                if action.bid is None or action not in legal:
+                if action.bid is None or not self.is_action_legal(action):
                     if self.state.current_bid is not None:
                         action = Action(kind='challenge')
                     else:
@@ -65,7 +64,6 @@ class DeterministicEngine(LiarDiceEngine):
                     self.state.current_bid = action.bid
                     rb = RoundBid(player_idx=idx, player_name=self.state.players[idx].name, bid=action.bid, round_number=self.state.round_number)
                     self.state.round_bids.append(rb)
-                    self.state.game_history.append(rb)
                     self.state.current_player_idx = (idx + 1) % len(self.state.players)
                 else:
                     # fallthrough to challenge
@@ -123,7 +121,7 @@ class LiarDiceTests(unittest.TestCase):
             PlayerState(name='A', dice_remaining=3, dice=[1, 2, 3], agent=None),
             PlayerState(name='B', dice_remaining=3, dice=[1, 2, 2], agent=None),
         ]
-        state = GameState(players=players, current_player_idx=0, current_bid=None, round_number=1, faces=6, wild_ones=False, round_bids=[], game_history=[])
+        state = GameState(players=players, current_player_idx=0, current_bid=None, round_number=1, faces=6, wild_ones=False, round_bids=[], round_resolutions=[])
         engine = LiarDiceEngine(wild_ones=False)
         engine.state = state
         self.assertEqual(engine._count_face(2), 3)  # only 2s count
@@ -133,7 +131,7 @@ class LiarDiceTests(unittest.TestCase):
             PlayerState(name='A', dice_remaining=3, dice=[1, 2, 3], agent=None),
             PlayerState(name='B', dice_remaining=3, dice=[1, 2, 2], agent=None),
         ]
-        state = GameState(players=players, current_player_idx=0, current_bid=None, round_number=1, faces=6, wild_ones=True, round_bids=[], game_history=[])
+        state = GameState(players=players, current_player_idx=0, current_bid=None, round_number=1, faces=6, wild_ones=True, round_bids=[], round_resolutions=[])
         engine = LiarDiceEngine(wild_ones=True)
         engine.state = state
         self.assertEqual(engine._count_face(2), 5)  # 2s + ones count
@@ -201,8 +199,8 @@ class LiarDiceTests(unittest.TestCase):
                 assert all(isinstance(d, int) for d in my_dice)
                 # Ensure round_bids is present
                 assert isinstance(state_view.round_bids, list)
-                # Ensure game_history is present
-                assert isinstance(state_view.game_history, list)
+                # Ensure round_resolutions is present
+                assert isinstance(state_view.round_resolutions, list)
                 self.checked = True
                 self.call_count += 1
                 # First call bids, second call challenges to end round
@@ -237,17 +235,12 @@ class LiarDiceTests(unittest.TestCase):
             [3, 4],
         ])
         engine._begin_round()
-        actions = engine.legal_actions()
-        bids = [a for a in actions if a.kind == 'bid']
-        # Expect quantity 1..4 and face 1..6 => 24 bids
-        self.assertEqual(len(bids), 4 * 6)
-        # Ensure challenge/exact are absent when no current bid
-        self.assertFalse(any(a.kind == 'challenge' for a in actions))
-        self.assertFalse(any(a.kind == 'exact' for a in actions))
-        # Check that all combinations exist
-        combos = {(a.bid.quantity, a.bid.face) for a in bids}
-        expected = {(q, f) for q in range(1, 5) for f in range(1, 7)}
-        self.assertEqual(combos, expected)
+        # Test that bids are legal when no current bid exists
+        self.assertTrue(engine.is_action_legal(Action(kind='bid', bid=Bid(1, 1))))
+        self.assertTrue(engine.is_action_legal(Action(kind='bid', bid=Bid(4, 6))))
+        # Verify challenge and exact are not legal when no current bid
+        self.assertFalse(engine.is_action_legal(Action(kind='challenge')))
+        self.assertFalse(engine.is_action_legal(Action(kind='exact')))
 
     def test_legal_actions_with_current_bid_and_exact_toggle(self):
         # Setup with 5 dice total
@@ -263,21 +256,20 @@ class LiarDiceTests(unittest.TestCase):
         engine._begin_round()
         # Set a current bid 2x3
         engine.state.current_bid = Bid(2, 3)
-        actions = engine.legal_actions()
-        bids = [a for a in actions if a.kind == 'bid']
-        # Count bids strictly higher than (2,3)
-        total = engine.state.total_dice_in_play()
-        expected_count = sum(1 for q in range(1, total + 1) for f in range(1, engine.faces + 1)
-                             if (q > 2) or (q == 2 and f > 3))
-        self.assertEqual(len(bids), expected_count)
-        self.assertTrue(any(a.kind == 'challenge' for a in actions))
-        self.assertTrue(any(a.kind == 'exact' for a in actions))
+        # Test some legal bids (higher quantity or same quantity higher face)
+        self.assertTrue(engine.is_action_legal(Action(kind='bid', bid=Bid(3, 1))))
+        self.assertTrue(engine.is_action_legal(Action(kind='bid', bid=Bid(2, 4))))
+        # Test illegal bids
+        self.assertFalse(engine.is_action_legal(Action(kind='bid', bid=Bid(2, 3))))
+        self.assertFalse(engine.is_action_legal(Action(kind='bid', bid=Bid(1, 6))))
+        # Challenge and exact are legal
+        self.assertTrue(engine.is_action_legal(Action(kind='challenge')))
+        self.assertTrue(engine.is_action_legal(Action(kind='exact')))
 
-        # Now disable exact and verify it's absent
+        # Now disable exact and verify it's not legal
         engine.exact_call_enabled = False
-        actions2 = engine.legal_actions()
-        self.assertTrue(any(a.kind == 'challenge' for a in actions2))
-        self.assertFalse(any(a.kind == 'exact' for a in actions2))
+        self.assertTrue(engine.is_action_legal(Action(kind='challenge')))
+        self.assertFalse(engine.is_action_legal(Action(kind='exact')))
 
     def test_exact_call_correct_and_incorrect(self):
         # Listener to capture events
@@ -332,14 +324,21 @@ class LiarDiceTests(unittest.TestCase):
         ])
         engine._begin_round()
         engine.state.current_bid = Bid(2, 3)
-        actions = engine.legal_actions()
-        bids = [a for a in actions if a.kind == 'bid']
-        # Ensure each bid is strictly higher than the current bid and ordering is non-decreasing by (quantity, face)
-        def key(a):
-            return (a.bid.quantity, a.bid.face)
-        self.assertTrue(all((b.bid.quantity > 2) or (b.bid.quantity == 2 and b.bid.face > 3) for b in bids))
-        sorted_bids = sorted(bids, key=key)
-        self.assertEqual([key(b) for b in bids], [key(b) for b in sorted_bids])
+        # Test some legal bids (strictly higher)
+        legal_bids = [
+            Bid(3, 1), Bid(3, 2), Bid(4, 1),  # Higher quantity
+            Bid(2, 4), Bid(2, 5), Bid(2, 6),  # Same quantity, higher face
+        ]
+        for bid in legal_bids:
+            self.assertTrue(engine.is_action_legal(Action(kind='bid', bid=bid)))
+        # Test illegal bids
+        illegal_bids = [
+            Bid(2, 3),  # Same as current
+            Bid(2, 2),  # Same quantity, lower face
+            Bid(1, 6),  # Lower quantity
+        ]
+        for bid in illegal_bids:
+            self.assertFalse(engine.is_action_legal(Action(kind='bid', bid=bid)))
 
 
 if __name__ == '__main__':

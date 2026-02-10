@@ -42,6 +42,20 @@ class RoundBid:
 
 
 @dataclass(frozen=True)
+class RoundResolution:
+    """Records how a round ended and what was revealed"""
+    round_number: int
+    bids: List[RoundBid]  # All bids made during this round
+    final_bid: Bid
+    resolution_type: str  # 'challenge' or 'exact'
+    resolver_name: str  # Who called challenge/exact
+    winner_name: str
+    loser_name: str
+    actual_count: int  # Actual count of the bid face
+    revealed_dice: Dict[str, List[int]]  # player_name -> their dice
+
+
+@dataclass(frozen=True)
 class PlayerPublic:
     name: str
     dice_remaining: int
@@ -57,6 +71,21 @@ class RoundBidPublic:
 
 
 @dataclass(frozen=True)
+class RoundResolutionPublic:
+    """Public view of how a round ended"""
+    round_number: int
+    bids: List[RoundBidPublic]  # All bids made during this round
+    final_bid_quantity: int
+    final_bid_face: int
+    resolution_type: str  # 'challenge' or 'exact'
+    resolver_name: str
+    winner_name: str
+    loser_name: str
+    actual_count: int
+    revealed_dice: Dict[str, List[int]]
+
+
+@dataclass(frozen=True)
 class PublicState:
     players: List[PlayerPublic]
     current_bid: Optional[Bid]
@@ -65,7 +94,7 @@ class PublicState:
     wild_ones: bool
     my_dice: List[int]
     round_bids: List[RoundBidPublic]
-    game_history: List[RoundBidPublic]
+    round_resolutions: List[RoundResolutionPublic]  # How each round ended
     permutation_number: int
 
 
@@ -78,7 +107,7 @@ class GameState:
     faces: int
     wild_ones: bool
     round_bids: List[RoundBid]
-    game_history: List[RoundBid]
+    round_resolutions: List[RoundResolution]  # Complete history of round endings
 
     def total_dice_in_play(self) -> int:
         return sum(p.dice_remaining for p in self.players)
@@ -93,9 +122,23 @@ class GameState:
             RoundBidPublic(player_name=rb.player_name, quantity=rb.bid.quantity, face=rb.bid.face, round_number=rb.round_number)
             for rb in self.round_bids
         ]
-        game_history_public = [
-            RoundBidPublic(player_name=rb.player_name, quantity=rb.bid.quantity, face=rb.bid.face, round_number=rb.round_number)
-            for rb in self.game_history
+        round_resolutions_public = [
+            RoundResolutionPublic(
+                round_number=rr.round_number,
+                bids=[
+                    RoundBidPublic(player_name=rb.player_name, quantity=rb.bid.quantity, face=rb.bid.face, round_number=rb.round_number)
+                    for rb in rr.bids
+                ],
+                final_bid_quantity=rr.final_bid.quantity,
+                final_bid_face=rr.final_bid.face,
+                resolution_type=rr.resolution_type,
+                resolver_name=rr.resolver_name,
+                winner_name=rr.winner_name,
+                loser_name=rr.loser_name,
+                actual_count=rr.actual_count,
+                revealed_dice=rr.revealed_dice,
+            )
+            for rr in self.round_resolutions
         ]
         return PublicState(
             players=players_public,
@@ -105,7 +148,7 @@ class GameState:
             wild_ones=self.wild_ones,
             my_dice=list(self.players[player_idx].dice),
             round_bids=round_bids_public,
-            game_history=game_history_public,
+            round_resolutions=round_resolutions_public,
             permutation_number=0,  # Will be set by engine in the future
         )
 
@@ -136,12 +179,12 @@ class Agent:
         """
         raise NotImplementedError
     
-    def game_finished(self, winner_name: str, game_history: List[RoundBid]) -> None:
+    def game_finished(self, winner_name: str, round_resolutions: List[RoundResolution]) -> None:
         """
         Called at the end of each game. Override to update internal state, weights, or learn from outcomes.
         
         Args:
             winner_name: Name of the winning player
-            game_history: Complete list of all bids made during the game (RoundBid objects)
+            round_resolutions: Complete list of how each round ended, including challenges/exacts and revealed dice
         """
         pass  # Default implementation does nothing
