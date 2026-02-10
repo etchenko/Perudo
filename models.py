@@ -40,6 +40,31 @@ class RoundBid:
     bid: Bid
 
 
+@dataclass(frozen=True)
+class PlayerPublic:
+    name: str
+    dice_remaining: int
+    mine: bool
+
+
+@dataclass(frozen=True)
+class RoundBidPublic:
+    player_name: str
+    quantity: int
+    face: int
+
+
+@dataclass(frozen=True)
+class PublicState:
+    players: List[PlayerPublic]
+    current_bid: Optional[Bid]
+    round_number: int
+    faces: int
+    wild_ones: bool
+    my_dice: List[int]
+    round_bids: List[RoundBidPublic]
+
+
 @dataclass
 class GameState:
     players: List[PlayerState]
@@ -53,34 +78,25 @@ class GameState:
     def total_dice_in_play(self) -> int:
         return sum(p.dice_remaining for p in self.players)
 
-    def visible_summary_for(self, player_idx: int) -> Dict[str, object]:
-        # Expose only what agents should see
-        return {
-            'players': [
-                {
-                    'name': p.name,
-                    'dice_remaining': p.dice_remaining,
-                    'mine': i == player_idx,
-                }
-                for i, p in enumerate(self.players)
-            ],
-            'current_bid': None if self.current_bid is None else {
-                'quantity': self.current_bid.quantity,
-                'face': self.current_bid.face,
-            },
-            'round_number': self.round_number,
-            'faces': self.faces,
-            'wild_ones': self.wild_ones,
-            'my_dice': list(self.players[player_idx].dice),
-            'round_bids': [
-                {
-                    'player_name': rb.player_name,
-                    'quantity': rb.bid.quantity,
-                    'face': rb.bid.face,
-                }
-                for rb in self.round_bids
-            ],
-        }
+    def visible_summary_for(self, player_idx: int) -> PublicState:
+        # Expose only what agents should see in a typed dataclass
+        players_public = [
+            PlayerPublic(name=p.name, dice_remaining=p.dice_remaining, mine=(i == player_idx))
+            for i, p in enumerate(self.players)
+        ]
+        round_bids_public = [
+            RoundBidPublic(player_name=rb.player_name, quantity=rb.bid.quantity, face=rb.bid.face)
+            for rb in self.round_bids
+        ]
+        return PublicState(
+            players=players_public,
+            current_bid=self.current_bid,
+            round_number=self.round_number,
+            faces=self.faces,
+            wild_ones=self.wild_ones,
+            my_dice=list(self.players[player_idx].dice),
+            round_bids=round_bids_public,
+        )
 
 
 @dataclass

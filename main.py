@@ -3,11 +3,13 @@ from game_engine import LiarDiceEngine
 
 
 def main():
-    engine = LiarDiceEngine(wild_ones=True, starting_dice=6)
+    engine = LiarDiceEngine(wild_ones=False, starting_dice=2)
     engine.add_players([
         ConservativeAgent("Alice"),
+        RandomAgent("Dave"),
         ConservativeAgent("Bob"),
         ConservativeAgent("Cara"),
+        RandomAgent("Eve"),
     ])
     engine.play_game(verbose=True)
 

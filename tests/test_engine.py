@@ -77,7 +77,38 @@ class TestEngine(LiarDiceEngine):
                     raise ValueError("Challenge without bid")
                 # Resolve using base method
                 result = self._resolve_challenge(challenger_idx=idx)
+                # Emit resolution event similar to engine
+                actual = self._count_face(self.state.current_bid.face)
+                self._emit(
+                    "challenge_resolved",
+                    winner=self.state.players[result.winner_idx].name,
+                    loser=self.state.players[result.loser_idx].name,
+                    bid={"quantity": self.state.current_bid.quantity, "face": self.state.current_bid.face},
+                    actual=actual,
+                )
                 loser_eliminated = self.state.players[result.loser_idx].dice_remaining == 0
+                if loser_eliminated:
+                    self._emit("player_eliminated", player=self.state.players[result.loser_idx].name)
+                self._remove_eliminated()
+                self.state.current_player_idx = (
+                    min(result.loser_idx, len(self.state.players) - 1) if loser_eliminated else result.loser_idx
+                )
+                break
+            elif action.kind == 'exact':
+                if not self.exact_call_enabled or self.state.current_bid is None:
+                    raise ValueError("Exact call not allowed or no bid")
+                result = self._resolve_exact(idx)
+                actual = self._count_face(self.state.current_bid.face)
+                self._emit(
+                    "exact_resolved",
+                    winner=self.state.players[result.winner_idx].name,
+                    loser=self.state.players[result.loser_idx].name,
+                    bid={"quantity": self.state.current_bid.quantity, "face": self.state.current_bid.face},
+                    actual=actual,
+                )
+                loser_eliminated = self.state.players[result.loser_idx].dice_remaining == 0
+                if loser_eliminated:
+                    self._emit("player_eliminated", player=self.state.players[result.loser_idx].name)
                 self._remove_eliminated()
                 self.state.current_player_idx = (
                     min(result.loser_idx, len(self.state.players) - 1) if loser_eliminated else result.loser_idx
@@ -162,15 +193,15 @@ class LiarDiceTests(unittest.TestCase):
 
             def decide(self, state_view, legal_actions):
                 # Ensure players entries do not expose dice lists
-                players = state_view['players']
+                players = state_view.players
                 for entry in players:
-                    assert 'dice' not in entry
+                    assert not hasattr(entry, 'dice')
                 # Ensure my_dice exists and is a list of ints
-                my_dice = state_view['my_dice']
+                my_dice = state_view.my_dice
                 assert isinstance(my_dice, list)
                 assert all(isinstance(d, int) for d in my_dice)
                 # Ensure round_bids is present
-                assert 'round_bids' in state_view
+                assert isinstance(state_view.round_bids, list)
                 self.checked = True
                 # Bid minimally
                 bids = [a for a in legal_actions if a.kind == 'bid']
@@ -244,6 +275,68 @@ class LiarDiceTests(unittest.TestCase):
         actions2 = engine.legal_actions()
         self.assertTrue(any(a.kind == 'challenge' for a in actions2))
         self.assertFalse(any(a.kind == 'exact' for a in actions2))
+
+    def test_exact_call_correct_and_incorrect(self):
+        # Listener to capture events
+        events = []
+        def collect(event, payload):
+            events.append((event, payload))
+
+        # Correct exact: set bid to match actual
+        a = ScriptedAgent('A', [Action(kind='bid', bid=Bid(2, 2))])
+        b = ScriptedAgent('B', [Action(kind='exact')])
+        engine = TestEngine(wild_ones=False, starting_dice=3, faces=6, exact_call_enabled=True)
+        engine.add_players([a, b])
+        engine.start_new_game()
+        engine.register_listener(collect)
+        engine.set_round_dice([
+            [2, 5, 6],
+            [2, 3, 4],
+        ])
+        engine.play_one_round(verbose=False)
+        # B should gain one die (capped to starting_dice)
+        b_state = next(p for p in engine.state.players if p.name == 'B')
+        self.assertEqual(b_state.dice_remaining, 3)
+        self.assertTrue(any(e[0] == 'exact_resolved' for e in events))
+
+        # Incorrect exact: set bid not matching actual
+        events.clear()
+        a2 = ScriptedAgent('A2', [Action(kind='bid', bid=Bid(1, 6))])
+        b2 = ScriptedAgent('B2', [Action(kind='exact')])
+        engine2 = TestEngine(wild_ones=False, starting_dice=1, faces=6, exact_call_enabled=True)
+        engine2.add_players([a2, b2])
+        engine2.start_new_game()
+        engine2.register_listener(collect)
+        engine2.set_round_dice([
+            [2],
+            [3],
+        ])
+        engine2.play_one_round(verbose=False)
+        # B2 should lose one die and be eliminated
+        names2 = [p.name for p in engine2.state.players]
+        self.assertNotIn('B2', names2)
+        self.assertTrue(any(e[0] == 'player_eliminated' for e in events))
+
+    def test_bid_ordering_strictly_increasing(self):
+        engine = TestEngine(wild_ones=False, starting_dice=2, faces=6)
+        a = ScriptedAgent('A', [])
+        b = ScriptedAgent('B', [])
+        engine.add_players([a, b])
+        engine.start_new_game()
+        engine.set_round_dice([
+            [1, 2],
+            [3, 4],
+        ])
+        engine._begin_round()
+        engine.state.current_bid = Bid(2, 3)
+        actions = engine.legal_actions()
+        bids = [a for a in actions if a.kind == 'bid']
+        # Ensure each bid is strictly higher than the current bid and ordering is non-decreasing by (quantity, face)
+        def key(a):
+            return (a.bid.quantity, a.bid.face)
+        self.assertTrue(all((b.bid.quantity > 2) or (b.bid.quantity == 2 and b.bid.face > 3) for b in bids))
+        sorted_bids = sorted(bids, key=key)
+        self.assertEqual([key(b) for b in bids], [key(b) for b in sorted_bids])
 
 
 if __name__ == '__main__':
