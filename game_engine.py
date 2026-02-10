@@ -12,7 +12,7 @@ class LiarDiceEngine:
 		self,
 		faces: int = 6,
 		starting_dice: int = 6,
-		wild_ones: bool = False,
+		wild_ones: bool = True,
 		exact_call_enabled: bool = True,
 		rng: Optional[random.Random] = None,
 	) -> None:
