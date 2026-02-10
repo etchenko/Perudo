@@ -135,3 +135,13 @@ class Agent:
         Must return one of the provided legal actions.
         """
         raise NotImplementedError
+    
+    def game_finished(self, winner_name: str, game_history: List[RoundBid]) -> None:
+        """
+        Called at the end of each game. Override to update internal state, weights, or learn from outcomes.
+        
+        Args:
+            winner_name: Name of the winning player
+            game_history: Complete list of all bids made during the game (RoundBid objects)
+        """
+        pass  # Default implementation does nothing

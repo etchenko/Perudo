@@ -7,6 +7,22 @@ from typing import Callable, List, Optional, Sequence
 from models import Action, Agent, Bid, GameState, PlayerState, RoundBid, RoundResult
 
 
+import signal
+from contextlib import contextmanager
+
+class TimeoutException(Exception): pass
+# Utility context manager to enforce time limits on agent decisions
+@contextmanager
+def time_limit(seconds):
+    def signal_handler(signum, frame):
+        raise TimeoutException("Timed out!")
+    signal.signal(signal.SIGALRM, signal_handler)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+
 class LiarDiceEngine:
 	def __init__(
 		self,
@@ -15,13 +31,14 @@ class LiarDiceEngine:
 		wild_ones: bool = True,
 		exact_call_enabled: bool = True,
 		rng: Optional[random.Random] = None,
+		time_limit_seconds: int = 1,
 	) -> None:
 		self.faces = faces
 		self.starting_dice = starting_dice
 		self.wild_ones = wild_ones
 		self.exact_call_enabled = exact_call_enabled
 		self.rng = rng or random.Random()
-
+		self.time_limit_seconds = time_limit_seconds
 		self.agents: List[Agent] = []
 		self.state: Optional[GameState] = None
 		# Optional event listeners: functions receiving (event: str, payload: dict)
@@ -256,11 +273,25 @@ class LiarDiceEngine:
 				agent = self.state.players[idx].agent
 				agent_obj = agent if isinstance(agent, Agent) else Agent()
 				state_view = self.state.visible_summary_for(idx)
-				action = agent_obj.decide(state_view)
-
-
-				state_view = self.state.visible_summary_for(idx)
-				action = agent_obj.decide(state_view)
+				try:
+					with time_limit(self.time_limit_seconds): # 1 second per decision
+						action = agent_obj.decide(state_view)
+				except Exception:
+					# Force challenge if timeout/error and a bid exists, else minimal legal bid
+					print(f"Agent {agent_obj.name} timed out or errored on decision. Forcing legal fallback action.")
+					if self.state.current_bid is not None:
+						action = Action(kind='challenge')
+					else:
+						# Find minimal legal bid
+						for q in range(1, self.state.total_dice_in_play() + 1):
+							for f in range(1, self.faces + 1):
+								min_bid = Bid(q, f)
+								if self.is_action_legal(Action(kind='bid', bid=min_bid)):
+									action = Action(kind='bid', bid=min_bid)
+									break
+								else:
+									continue
+							break
 
 				if not self.is_action_legal(action):
 					# Force challenge if illegal action and a bid exists, else minimal legal bid
@@ -317,4 +348,13 @@ class LiarDiceEngine:
 		if verbose:
 			print(f"\nWinner: {winner}")
 		self._emit("game_end", winner=winner)
+		
+		# Notify all agents that the game has finished
+		for agent in self.agents:
+			try:
+				with time_limit(self.time_limit_seconds * 2): # 1 second for post-game processing
+					agent.game_finished(winner, self.state.game_history)
+			except Exception:# Agent errors should not crash the engine
+				pass
+		
 		return winner

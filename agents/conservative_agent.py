@@ -12,16 +12,19 @@ class ConservativeAgent(Agent):
     def decide(self, state_view: PublicState) -> Action:
         # If can challenge, decide based on simple heuristic
         current_bid = state_view.current_bid
+        total_dice = sum(p.dice_remaining for p in state_view.players if p.name != self.name)
         if current_bid:
             face = int(current_bid.face)
             my_dice = state_view.my_dice
             my_face_count = sum(1 for d in my_dice if d == face)
             if state_view.wild_ones and face != 1:
                 my_face_count += sum(1 for d in my_dice if d == 1)
-            # If my expected contribution is very low relative to quantity, challenge
-            quantity = int(current_bid.quantity)
-            if my_face_count <= max(0, quantity - 2):
+
+            if current_bid.quantity >= my_face_count + (total_dice /(state_view.faces if not state_view.wild_ones or face == 1 else state_view.faces - 1)):
+                # If the bid is not plausible given my dice, challenge
                 return Action(kind='challenge')
+
+                
         
         # When bidding, prefer faces we actually have
         total = sum(p.dice_remaining for p in state_view.players)
