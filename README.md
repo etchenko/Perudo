@@ -300,6 +300,21 @@ With `n_tables=10` and `n_replications=100`:
 
 This setup tests agents against various opponent combinations, preventing overfitting to specific matchups.
 
+## Running the Dashboard
+
+To launch the interactive simulation dashboard, ensure you have the necessary dependencies installed (Streamlit, Pandas, Altair):
+
+```bash
+pip install streamlit pandas altair
+```
+
+Run the dashboard from your terminal: 
+
+```bash
+streamlit run dashboard.py
+```
+The dashboard will then automatically open in your default web browser.
+
 ## Running the Game
 
 ```python
