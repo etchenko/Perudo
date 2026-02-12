@@ -19,8 +19,9 @@ class Simulation:
         self.global_scores = {p.name: 0 for p in self.agents}
         
 
-    def start(self, verbose:bool=False):
+    def start(self, verbose:bool=False, callback=None, return_history:bool=False):
         table_count = 0
+        history = [] if return_history else None
         for table in self._make_tables():
             local_scores = {p.name: 0 for p in table}
             winner = "No winner"
@@ -32,16 +33,21 @@ class Simulation:
                 engine = LiarDiceEngine(wild_ones=True, starting_dice=5)
                 engine.add_players(table)
                 winner = engine.play_game(verbose=False)
+                if return_history:
+                    history.append(winner)
                 local_scores[winner] += 1
                 self.global_scores[winner] += 1
+
+                if callback:
+                    callback(winner, self.global_scores)
 
             table_count += 1
 
             if verbose:
                 print(f"{self.n_replications} replications have been finished. Scores at this table:\n{local_scores}\n\n")    
 
-                
-
+        if return_history:
+            return self.global_scores, history        
         return self.global_scores
 
 
